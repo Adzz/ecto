@@ -1777,7 +1777,7 @@ defmodule Ecto.Changeset do
   """
   @spec validate_change(
           t,
-          atom,
+          atom | list,
           (atom, term -> [{atom, String.t()} | {atom, {String.t(), Keyword.t()}}])
         ) :: t
   def validate_change(%Changeset{} = changeset, field, validator) when is_atom(field) do
@@ -1800,6 +1800,62 @@ defmodule Ecto.Changeset do
       [] -> changeset
       [_ | _] -> %{changeset | errors: new ++ errors, valid?: false}
     end
+  end
+
+  def validate_change(%Changeset{} = changeset, fields, validator) when is_list(fields) do
+    %{changes: changes, errors: errors} = changeset
+    ensure_field_exists!(changeset, fields |> IO.inspect(limit: :infinity))
+    # Check field exists. If we are changing a field we care about, then run the validator for
+    # the field in the given path. Or for all the fields if the list is a many.
+
+    # May have string keys in data, or may have atom keys. If we require the API to be a list
+    # then we need to handle that.
+
+    # value = Map.get(changes, field)
+    # new = if is_nil(value), do: [], else: validator.(field, value)
+    # Enum.reduce(fields, changeset, fn
+    #   {field, nested_fields}, updated_changeset ->
+    #     Map.get(changes, field)
+    #     |> get_in()
+
+    #   field, updated_changeset ->
+    #     add_errors(changeset, validator.(field, Map.get(changes, field)))
+    # end)
+
+    get_value(changes, fields) |> IO.inspect(limit: :infinity)
+
+    # new =
+    #   Enum.map(new, fn
+    #     {key, val} when is_atom(key) and is_binary(val) ->
+    #       {key, {val, []}}
+
+    #     {key, {val, opts}} when is_atom(key) and is_binary(val) and is_list(opts) ->
+    #       {key, {val, opts}}
+    #   end)
+
+    # case new do
+    #   [] -> changeset
+    #   [_ | _] -> %{changeset | errors: new ++ errors, valid?: false}
+    # end
+  end
+
+  defp add_errors(changeset, []), do: changeset
+  defp add_errors(changeset, errors), do: %{changeset | errors: new ++ errors, valid?: false}
+
+  # defp get_value(changes, path) when is_list(changes) do
+  #   Enum.map(changes, fn change -> get_value(change, path) end)
+  # end
+
+  defp get_value(changes, [field | rest]) do
+    Map.get(changes, field)
+    |> get_value(rest)
+  end
+
+  defp get_value(changes, {field, nested_field}) do
+    raise "hell"
+
+    Map.get(changes, field)
+    |> Map.get()
   end
 
   @doc """
@@ -2007,12 +2063,37 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp ensure_field_exists!(%Changeset{types: types, data: data}, field) do
-    unless Map.has_key?(types, field) do
+  defp ensure_field_exists!(%Changeset{data: data, types: types}, fields) do
+    ensure_field_exists!(types, fields, data)
+  end
+
+  defp ensure_field_exists!(types, fields, data) when is_list(fields) do
+    Enum.all?(fields, fn
+      {field, nested_fields} ->
+        # Ensure the relation exists
+        with true <- do_ensure!(types, field, data),
+             # Get the related fields and check them.
+             {_, %{related: related}} = Map.fetch!(types, field) do
+          Enum.all?(nested_fields, fn nested_field ->
+            ensure_field_exists!(related.__changeset__(), nested_field, data)
+          end)
+        end
+
+      field ->
+        do_ensure!(types, field, data)
+    end)
+  end
+
+  defp ensure_field_exists!(types, field, data) do
+    do_ensure!(types, field, data)
+  end
+
+  defp do_ensure!(types, field, data) do
+    if Map.has_key?(types, field) do
+      true
+    else
       raise ArgumentError, "unknown field #{inspect(field)} in #{inspect(data)}"
     end
-
-    true
   end
 
   defp missing?(changeset, field, trim) when is_atom(field) do
@@ -2761,10 +2842,10 @@ defmodule Ecto.Changeset do
       users_p1_email_key
       ...
       users_p99_email_key
-      
+
   In this case you can use the name and suffix options together to match on
   these dynamic indexes, like:
-      
+
       cast(user, params, [:email])
       |> unique_constraint(:email, name: :email_key, match: :suffix)
 

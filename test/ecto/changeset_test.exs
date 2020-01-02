@@ -49,6 +49,7 @@ defmodule Ecto.ChangesetTest do
       field :published_at, :naive_datetime
       field :source, :map
       field :permalink, :string, source: :url
+      embeds_one :embed, SocialSource
       belongs_to :category, Ecto.ChangesetTest.Category, source: :cat_id
       has_many :comments, Ecto.ChangesetTest.Comment, on_replace: :delete
       has_one :comment, Ecto.ChangesetTest.Comment
@@ -921,6 +922,47 @@ defmodule Ecto.ChangesetTest do
       changeset(%{"title" => "hello"})
       |> validate_change(:bad, fn _, _ -> [] end)
     end
+  end
+
+  @tag :t
+  test "validate_change/3 - nested fields" do
+    # when fields are a list
+    # Has one / Belongs to
+    # validate_change(changeset, [:comment, :field], validator)
+    # Has many
+    # validate_change(changeset, [comments: [:field, nested_relation: [:number_field]]], validator)
+    # validator = fn :title, title ->
+    #    # Value must not be "foo"!
+    #    if title == "foo" do
+    #      [title: "cannot be foo"]
+    #    else
+    #      []
+    #    end
+    #  end
+
+    # When valid
+    # changeset =
+    #   changeset(%{"title" => "hello"})
+    #   |> validate_change([:title], fn :title, "hello" -> [] end)
+
+    # assert changeset.valid?
+    # assert changeset.errors == []
+
+    # Has one - simple case
+    changeset =
+      changeset(%{"title" => "hello", "comment" => %{"id" => "200"}})
+      |> validate_change([comment: [:id]], fn :id, "200" -> [] end)
+
+    # [comment: [:id]]
+    # [comment: nested_relation: [:nested_field]]
+
+    assert changeset.valid?
+    assert changeset.errors == []
+
+    # assert_raise ArgumentError, ~r/unknown field :bad in/, fn ->
+    #   changeset(%{"title" => "hello"})
+    #   |> validate_change([comment: [:bad]], fn _, _ -> [] end)
+    # end
   end
 
   test "validate_change/4" do
