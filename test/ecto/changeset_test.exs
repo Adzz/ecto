@@ -931,38 +931,39 @@ defmodule Ecto.ChangesetTest do
     # validate_change(changeset, [:comment, :field], validator)
     # Has many
     # validate_change(changeset, [comments: [:field, nested_relation: [:number_field]]], validator)
-    # validator = fn :title, title ->
-    #    # Value must not be "foo"!
-    #    if title == "foo" do
-    #      [title: "cannot be foo"]
-    #    else
-    #      []
-    #    end
-    #  end
-
+    # or
+    # validate_change(changeset, [comments:, :field, :nested_relation, :number_field], validator)
+    # but then we have to do the has_many ourselves
     # When valid
-    # changeset =
-    #   changeset(%{"title" => "hello"})
-    #   |> validate_change([:title], fn :title, "hello" -> [] end)
-
-    # assert changeset.valid?
-    # assert changeset.errors == []
-
-    # Has one - simple case
     changeset =
-      changeset(%{"title" => "hello", "comment" => %{"id" => "200"}})
-      |> validate_change([comment: [:id]], fn :id, "200" -> [] end)
-
-    # [comment: [:id]]
-    # [comment: nested_relation: [:nested_field]]
+      changeset(%{"title" => "hello"})
+      |> validate_change([:title], fn [:title], "hello" -> [] end)
 
     assert changeset.valid?
     assert changeset.errors == []
 
-    # assert_raise ArgumentError, ~r/unknown field :bad in/, fn ->
-    #   changeset(%{"title" => "hello"})
-    #   |> validate_change([comment: [:bad]], fn _, _ -> [] end)
-    # end
+    # Has one - simple case
+    # What if we use .change instead with string values?
+    changeset =
+      Ecto.Changeset.cast(
+        %Post{},
+        %{"title" => "hello", "comment" => %{"id" => "200"}},
+        ~w(id token title body upvotes decimal color topics virtual)a
+      )
+      |> Ecto.Changeset.cast_assoc(:comment,
+        with: fn struct, changes ->
+          Ecto.Changeset.cast(struct, changes, [:id])
+        end
+      )
+      |> validate_change([comment: [:id]], fn [comment: [:id]], 200 -> [] end)
+
+    assert changeset.valid?
+    assert changeset.errors == []
+
+    assert_raise ArgumentError, ~r/unknown field :bad in/, fn ->
+      changeset(%{"title" => "hello"})
+      |> validate_change([comment: [:bad]], fn _, _ -> [] end)
+    end
   end
 
   test "validate_change/4" do

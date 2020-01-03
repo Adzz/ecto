@@ -1804,15 +1804,16 @@ defmodule Ecto.Changeset do
 
   def validate_change(%Changeset{} = changeset, fields, validator) when is_list(fields) do
     %{changes: changes, errors: errors} = changeset
-    ensure_field_exists!(changeset, fields |> IO.inspect(limit: :infinity))
+    ensure_field_exists!(changeset, fields)
     # Check field exists. If we are changing a field we care about, then run the validator for
     # the field in the given path. Or for all the fields if the list is a many.
 
     # May have string keys in data, or may have atom keys. If we require the API to be a list
     # then we need to handle that.
 
-    # value = Map.get(changes, field)
-    # new = if is_nil(value), do: [], else: validator.(field, value)
+    value = get_value(changes, fields)
+    new = if is_nil(value), do: [], else: validator.(fields, value)
+
     # Enum.reduce(fields, changeset, fn
     #   {field, nested_fields}, updated_changeset ->
     #     Map.get(changes, field)
@@ -1822,40 +1823,49 @@ defmodule Ecto.Changeset do
     #     add_errors(changeset, validator.(field, Map.get(changes, field)))
     # end)
 
-    get_value(changes, fields) |> IO.inspect(limit: :infinity)
+    new =
+      Enum.map(new, fn
+        {key, val} when is_atom(key) and is_binary(val) ->
+          {key, {val, []}}
 
-    # new =
-    #   Enum.map(new, fn
-    #     {key, val} when is_atom(key) and is_binary(val) ->
-    #       {key, {val, []}}
+        {key, {val, opts}} when is_atom(key) and is_binary(val) and is_list(opts) ->
+          {key, {val, opts}}
+      end)
 
-    #     {key, {val, opts}} when is_atom(key) and is_binary(val) and is_list(opts) ->
-    #       {key, {val, opts}}
-    #   end)
-
-    # case new do
-    #   [] -> changeset
-    #   [_ | _] -> %{changeset | errors: new ++ errors, valid?: false}
-    # end
+    case new do
+      [] -> changeset
+      [_ | _] -> %{changeset | errors: new ++ errors, valid?: false}
+    end
   end
 
   defp add_errors(changeset, []), do: changeset
-  defp add_errors(changeset, errors), do: %{changeset | errors: new ++ errors, valid?: false}
+
+  defp add_errors(changeset, errors) do
+    %{changeset | errors: changeset.errors ++ errors, valid?: false}
+  end
 
   # defp get_value(changes, path) when is_list(changes) do
   #   Enum.map(changes, fn change -> get_value(change, path) end)
   # end
 
-  defp get_value(changes, [field | rest]) do
-    Map.get(changes, field)
-    |> get_value(rest)
+  # We need to handle string keys in the data?
+
+  defp get_value(changeset = %Changeset{}, [{field, nested_field}]) do
+    Map.fetch!(changeset.changes, field)
+    |> get_value(nested_field)
   end
 
-  defp get_value(changes, {field, nested_field}) do
-    raise "hell"
+  defp get_value(changes, [{field, nested_field}]) do
+    Map.fetch!(changes, field)
+    |> get_value(nested_field)
+  end
 
-    Map.get(changes, field)
-    |> Map.get()
+  defp get_value(changeset = %Changeset{}, [field]) do
+    Map.fetch!(changeset.changes, field)
+  end
+
+  defp get_value(changes, [field]) do
+    Map.fetch!(changes, field)
   end
 
   @doc """
