@@ -16,6 +16,13 @@ defmodule Ecto.ChangesetTest do
     end
   end
 
+  defmodule Tag do
+    use Ecto.Schema
+    embedded_schema do
+      field :name, :string
+    end
+  end
+
   defmodule Category do
     use Ecto.Schema
 
@@ -49,6 +56,8 @@ defmodule Ecto.ChangesetTest do
       field :published_at, :naive_datetime
       field :source, :map
       field :permalink, :string, source: :url
+      embeds_many :tags, Ecto.ChangesetTest.Tag
+      embeds_one :embed, Ecto.ChangesetTest.SocialSource
       belongs_to :category, Ecto.ChangesetTest.Category, source: :cat_id
       has_many :comments, Ecto.ChangesetTest.Comment, on_replace: :delete
       has_one :comment, Ecto.ChangesetTest.Comment
@@ -859,6 +868,297 @@ defmodule Ecto.ChangesetTest do
     end
   end
 
+  describe "validate_changeset/3 When using a path for field" do
+    test "When field exists and is being changed we call the validator correctly" do
+      changeset =
+        changeset(%{"title" => "hello"})
+        |> validate_change([:title], fn [:title], "hello" -> [] end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+
+      changeset =
+        changeset(%{"id" => "300"})
+        |> validate_change([:title], fn [:title], "hello" -> raise "Not called" end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "When field is on a has_one association we call the validator appropriately" do
+      changeset =
+        Ecto.Changeset.cast(
+          %Post{},
+          %{"title" => "hello", "comment" => %{"id" => "200"}},
+          ~w(id token title body upvotes decimal color topics virtual)a
+        )
+        |> Ecto.Changeset.cast_assoc(:comment,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:id])
+          end
+        )
+        |> validate_change([comment: :id], fn [comment: :id], 200 -> [] end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+
+      changeset =
+        Ecto.Changeset.cast(
+          %Post{},
+          %{"title" => "hello", "comment" => %{"id" => "200"}},
+          ~w(id token title body upvotes decimal color topics virtual)a
+        )
+        |> Ecto.Changeset.cast_assoc(:comment,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:id])
+          end
+        )
+        |> validate_change([comment: [:id]], fn [comment: [:id]], 200 -> [] end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+
+      changeset =
+        Ecto.Changeset.cast(
+          %Post{},
+          %{"title" => "hello", "comment" => %{"other" => 1}},
+          [:title]
+        )
+        |> Ecto.Changeset.cast_assoc(:comment,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:id])
+          end
+        )
+        |> validate_change([comment: [:id]], fn _, _ -> raise "nope" end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "When field is on a embeds_one association we call the validator appropriately" do
+      changeset =
+        Ecto.Changeset.cast(
+          %Post{},
+          %{"title" => "hello", "embed" => %{"url" => "www.GiveUsUrDataBook.com"}},
+          [:title]
+        )
+        |> Ecto.Changeset.cast_embed(:embed,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:url])
+          end
+        )
+        |> validate_change([embed: :url], fn path, url ->
+          assert path == [embed: :url]
+          assert url == "www.GiveUsUrDataBook.com"
+          []
+        end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "When field points to an embeds_many, we pass all the values to the validator" do
+      changeset =
+        Ecto.Changeset.cast(
+          %Post{},
+          %{
+            "title" => "hello",
+            "tags" => [%{"name" => "Simpsons Fan Fiction"}, %{"name" => "safe for work"}]
+          },
+          [:title]
+        )
+        |> Ecto.Changeset.cast_embed(:tags,
+          with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:name]) end
+        )
+        |> validate_change([tags: :name], fn
+          [tags: :name], "Simpsons Fan Fiction" -> []
+          [tags: :name], "safe for work" -> []
+        end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "when field points to a has_many, we pass all the values to the validator" do
+      changeset =
+        Ecto.Changeset.cast(
+          %Category{},
+          %{
+            "posts" => [
+              %{"title" => "Lead Paint: Delicious But Deadly"},
+              %{"title" => "Two Minus Three Equals Negative Fun"}
+            ]
+          },
+          [:id]
+        )
+        |> Ecto.Changeset.cast_assoc(:posts,
+          with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:title]) end
+        )
+        |> validate_change([posts: :title], fn
+          [posts: :title], "Lead Paint: Delicious But Deadly" -> []
+          [posts: :title], "Two Minus Three Equals Negative Fun" -> []
+        end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "When field points to a has one on a has many, we do the right thing" do
+      changeset =
+        Ecto.Changeset.cast(
+          %Category{},
+          %{
+            "posts" => [
+              %{"title" => "hello", "comment" => %{"id" => "200"}},
+              %{"title" => "hello", "comment" => %{"id" => "400"}}
+            ]
+          },
+          [:id]
+        )
+        |> Ecto.Changeset.cast_assoc(:posts,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:title])
+            |> Ecto.Changeset.cast_assoc(:comment,
+              with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:id]) end
+            )
+          end
+        )
+        |> validate_change([posts: [comment: [:id]]], fn
+          [posts: [comment: [:id]]], 200 -> []
+          [posts: [comment: [:id]]], 400 -> []
+        end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "When field points to a has_many on a has_many we do the right thing" do
+      changeset =
+        Ecto.Changeset.cast(
+          %Category{},
+          %{
+            "posts" => [
+              %{"title" => "hello", "comments" => [%{"id" => "200"}, %{"id" => "300"}]},
+              %{"title" => "hello", "comments" => [%{"id" => "400"}, %{"id" => "500"}]}
+            ]
+          },
+          [:id]
+        )
+        |> Ecto.Changeset.cast_assoc(:posts,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:title])
+            |> Ecto.Changeset.cast_assoc(:comments,
+              with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:id]) end
+            )
+          end
+        )
+        |> validate_change([posts: [comments: [:id]]], fn
+          [posts: [comments: [:id]]], 200 -> []
+          [posts: [comments: [:id]]], 300 -> []
+          [posts: [comments: [:id]]], 400 -> []
+          [posts: [comments: [:id]]], 500 -> []
+        end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+
+      # When not making that change
+      Ecto.Changeset.cast(
+        %Category{},
+        %{
+          "posts" => [
+            %{"title" => "hello", "comments" => [%{}, %{}]},
+            %{"title" => "hello", "comments" => [%{}, %{}]}
+          ]
+        },
+        [:id]
+      )
+      |> Ecto.Changeset.cast_assoc(:posts,
+        with: fn struct, changes ->
+          Ecto.Changeset.cast(struct, changes, [:title])
+          |> Ecto.Changeset.cast_assoc(:comments,
+            with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:id]) end
+          )
+        end
+      )
+      |> validate_change([posts: [comments: [:id]]], fn _, _ ->
+        raise "This should not be called"
+      end)
+    end
+
+    test "When field points to a change we aren't making we don't call the validator" do
+      changeset =
+        Ecto.Changeset.cast(%Category{}, %{"posts" => [%{"title" => "hello"}]}, [])
+        |> Ecto.Changeset.cast_assoc(:posts,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:title])
+          end
+        )
+        |> validate_change([posts: :id], fn _, _ -> raise "the dead" end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "when the specified field doesn't even exist on the schema we raise" do
+      assert_raise ArgumentError, ~r/unknown field :bad in/, fn ->
+        changeset(%{"title" => "hello"})
+        |> validate_change([:bad], fn _, _ -> raise "hell" end)
+      end
+
+      assert_raise ArgumentError, ~r/unknown field :not_a_field in/, fn ->
+        Ecto.Changeset.cast(
+          %Post{},
+          %{"title" => "hello", "comment" => %{"id" => "200"}},
+          ~w(id token title body upvotes decimal color topics virtual)a
+        )
+        |> Ecto.Changeset.cast_assoc(:comment,
+          with: fn struct, changes ->
+            Ecto.Changeset.cast(struct, changes, [:id])
+          end
+        )
+        |> validate_change([comment: :not_a_field], fn _, _ -> raise "hell" end)
+      end
+    end
+
+    test "failing a validation" do
+
+    end
+
+    test "Pointing to a virtual field works" do
+      changeset =
+        Ecto.Changeset.cast(%Post{}, %{"virtual" => "insanity"}, [:virtual])
+        |> validate_change([:virtual], fn [:virtual], "insanity" -> [] end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+
+      changeset =
+        Ecto.Changeset.cast(%Category{}, %{"posts" => [%{"virtual" => "insanity"}]}, [:id])
+        |> Ecto.Changeset.cast_assoc(:posts,
+          with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:virtual]) end
+        )
+        |> validate_change([posts: :virtual], fn [posts: :virtual], "insanity" -> [] end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+
+    test "Pointing to a belongs_to works" do
+      changeset =
+        Ecto.Changeset.cast(%Post{}, %{"category" => %{"name" => "Put the Pro in Program"}}, [:id])
+        |> Ecto.Changeset.cast_assoc(:category,
+          with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:name]) end
+        )
+        |> validate_change([category: :name], fn [category: :name], "Put the Pro in Program" ->
+          []
+        end)
+
+      assert changeset.valid?
+      assert changeset.errors == []
+    end
+  end
+
   test "validate_change/4" do
     changeset =
       changeset(%{"title" => "hello"})
@@ -875,6 +1175,22 @@ defmodule Ecto.ChangesetTest do
     assert changeset.valid?
     assert changeset.errors == []
     assert validations(changeset) == [title: :oops]
+
+    changeset =
+      changeset(%{"title" => "hello"})
+      |> validate_change([:title], :oops, fn [:title], "hello" -> [title: "oops"] end)
+
+    refute changeset.valid?
+    assert changeset.errors == [title: {"oops", []}]
+    assert validations(changeset) == [{[:title], :oops}]
+
+    changeset =
+      changeset(%{})
+      |> validate_change([:title], :oops, fn [:title], "hello" -> [title: "oops"] end)
+
+    assert changeset.valid?
+    assert changeset.errors == []
+    assert validations(changeset) == [{[:title], :oops}]
   end
 
   test "validate_required/2" do

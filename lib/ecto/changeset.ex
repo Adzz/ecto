@@ -1628,6 +1628,8 @@ defmodule Ecto.Changeset do
   value is not `nil`. The function must return a list of errors
   (with an empty list meaning no errors).
 
+  `field` can be a path to a value in the changes that are taking place.
+
   In case there's at least one error, the list of errors will be appended to the
   `:errors` field of the changeset and the `:valid?` flag will be set to
   `false`.
@@ -1646,27 +1648,88 @@ defmodule Ecto.Changeset do
       iex> changeset.errors
       [title: {"cannot be foo", []}]
 
+      iex> changeset = change(%Post{}, %{title: "foo", comment: %{text: "foo comment"}})
+      iex> changeset = validate_change changeset, [comment: :text], fn [comment: :text], text  ->
+      ...>   # Value must not contain foo!
+      ...>   if String.contains?(text, "foo") do
+      ...>     [text: "cannot contain foo"]
+      ...>   else
+      ...>     []
+      ...>   end
+      ...> end
+      iex> changeset.errors
+      [title: {"cannot be foo", []}]
   """
-  @spec validate_change(t, atom, (atom, term -> [{atom, String.t} | {atom, {String.t, Keyword.t}}])) :: t
+  @spec validate_change(
+          t,
+          atom | list,
+          (atom, term -> [{atom, String.t()} | {atom, {String.t(), Keyword.t()}}])
+        ) :: t
   def validate_change(%Changeset{} = changeset, field, validator) when is_atom(field) do
     %{changes: changes, errors: errors} = changeset
     ensure_field_exists!(changeset, field)
 
     value = Map.get(changes, field)
-    new   = if is_nil(value), do: [], else: validator.(field, value)
-    new   =
+    new = if is_nil(value), do: [], else: validator.(field, value)
+
+    new =
       Enum.map(new, fn
         {key, val} when is_atom(key) and is_binary(val) ->
           {key, {val, []}}
+
         {key, {val, opts}} when is_atom(key) and is_binary(val) and is_list(opts) ->
           {key, {val, opts}}
       end)
 
     case new do
-      []    -> changeset
-      [_|_] -> %{changeset | errors: new ++ errors, valid?: false}
+      [] -> changeset
+      [_ | _] -> %{changeset | errors: new ++ errors, valid?: false}
     end
   end
+
+  def validate_change(%Changeset{} = changeset, fields, validator) when is_list(fields) do
+    %{changes: changes, errors: errors} = changeset
+    ensure_fields_exist!(changeset, fields)
+
+    new_errors =
+      case get_value(changes, fields) do
+        [] -> []
+        values = [_ | _] -> Enum.flat_map(values, fn value -> validator.(fields, value) end)
+        value -> validator.(fields, value)
+      end
+      |> Enum.map(fn
+        {key, val} when is_atom(key) and is_binary(val) ->
+          {key, {val, []}}
+
+        {key, {val, opts}} when is_atom(key) and is_binary(val) and is_list(opts) ->
+          {key, {val, opts}}
+      end)
+
+    case new_errors do
+      [] -> changeset
+      [_ | _] -> %{changeset | errors: new_errors ++ errors, valid?: false}
+    end
+  end
+
+  defp get_value(changes, path) when is_list(changes) do
+    Enum.map(changes, fn change -> get_value(change, path) end)
+    |> List.flatten()
+  end
+
+  defp get_value(changeset = %Changeset{}, [{field, nested_field}]) do
+    Map.get(changeset.changes, field, [])
+    |> get_value(nested_field)
+  end
+
+  defp get_value(changes, [{field, nested_field}]) do
+    Map.get(changes, field, [])
+    |> get_value(nested_field)
+  end
+
+  defp get_value(changeset = %Changeset{}, [field]), do: Map.get(changeset.changes, field, [])
+  defp get_value(changeset = %Changeset{}, field), do: Map.get(changeset.changes, field, [])
+  defp get_value(changes, [field]), do: Map.get(changes, field, [])
+  defp get_value(changes, field), do: Map.get(changes, field, [])
 
   @doc """
   Stores the validation `metadata` and validates the given `field` change.
@@ -1686,12 +1749,12 @@ defmodule Ecto.Changeset do
       [title: :useless_validator]
 
   """
-  @spec validate_change(t, atom, term, (atom, term -> [{atom, String.t} | {atom, {String.t, Keyword.t}}])) :: t
-  def validate_change(%Changeset{validations: validations} = changeset,
-                      field, metadata, validator) do
-    changeset = %{changeset | validations: [{field, metadata}|validations]}
-    validate_change(changeset, field, validator)
+  @spec validate_change(t, atom | list, term, (atom, term -> [{atom, String.t} | {atom, {String.t, Keyword.t}}])) :: t
+  def validate_change(%Changeset{validations: validations} = changeset, field_or_path, metadata, validator) do
+    changeset = %{changeset | validations: [{field_or_path, metadata}|validations]}
+    validate_change(changeset, field_or_path, validator)
   end
+
 
   @doc """
   Validates that one or more fields are present in the changeset.
@@ -1849,11 +1912,34 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp ensure_field_exists!(%Changeset{types: types, data: data}, field) do
-    unless Map.has_key?(types, field) do
+  defp ensure_fields_exist!(%Changeset{data: data, types: schema_types}, fields = [_ | _]) do
+    ensure_all_fields_exist!(schema_types, fields, data)
+  end
+
+  defp ensure_field_exists!(%Changeset{data: data, types: schema_types}, field) do
+    ensure_field_exists_in_schema!(schema_types, field, data)
+  end
+
+  defp ensure_all_fields_exist!(schema_types, [{field, rest}], data) do
+    ensure_field_exists_in_schema!(schema_types, field, data)
+    {_, %{related: related}} = Map.fetch!(schema_types, field)
+    ensure_all_fields_exist!(related.__changeset__(), rest, data)
+  end
+
+  defp ensure_all_fields_exist!(schema_types, [field], data) do
+    ensure_field_exists_in_schema!(schema_types, field, data)
+  end
+
+  defp ensure_all_fields_exist!(schema_types, field, data) do
+    ensure_field_exists_in_schema!(schema_types, field, data)
+  end
+
+  defp ensure_field_exists_in_schema!(schema_types, field, data) do
+    if Map.has_key?(schema_types, field) do
+      true
+    else
       raise ArgumentError, "unknown field #{inspect(field)} in #{inspect(data)}"
     end
-    true
   end
 
   defp missing?(changeset, field, trim) when is_atom(field) do
@@ -2512,20 +2598,20 @@ defmodule Ecto.Changeset do
       # In the changeset function
       cast(user, params, [:email])
       |> unique_constraint(:email, name: :users_email_company_id_index)
-  
+
   ### Partitioning
 
   If your table is partitioned, then your unique index might look different
   per partition - Postgres adds p<number> to the middle of your key, like:
-  
+
       users_p0_email_key
       users_p1_email_key
       ...
       users_p99_email_key
-      
+
   In this case you can use the name and suffix options together to match on
   these dynamic indexes, like:
-      
+
       cast(user, params, [:email])
       |> unique_constraint(:email, name: :email_key, match: :suffix)
 
