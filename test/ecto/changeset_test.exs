@@ -358,7 +358,10 @@ defmodule Ecto.ChangesetTest do
                 |> validate_required([:body])
 
     assert changeset.changes == %{}
-    assert changeset.errors == [body: {"is invalid", [type: :string, validation: :cast]}]
+    assert changeset.errors == [
+      body: {"can't be blank", [validation: :required]},
+      body: {"is invalid", [type: :string, validation: :cast]}
+    ]
     refute changeset.valid?
   end
 
@@ -883,6 +886,22 @@ defmodule Ecto.ChangesetTest do
 
       assert changeset.valid?
       assert changeset.errors == []
+
+      # When invalid with binary
+      changeset =
+        changeset(%{"title" => "hello"})
+        |> validate_change([:title], fn [:title], "hello" -> [title: "oops"] end)
+
+      refute changeset.valid?
+      assert changeset.errors == [title: "oops"]
+
+      # When invalid with tuple
+      changeset =
+        changeset(%{"title" => "hello"})
+        |> validate_change([:title], fn [:title], "hello" -> [title: {"oops", type: "bar"}] end)
+
+      refute changeset.valid?
+      assert changeset.errors == [title: {"oops", type: "bar"}]
     end
 
     test "When field is on a has_one association we call the validator appropriately" do
@@ -897,18 +916,17 @@ defmodule Ecto.ChangesetTest do
             Ecto.Changeset.cast(struct, changes, [:id])
           end
         )
-        |> validate_change([comment: :id], fn [comment: :id], 200 -> [] end)
+        |> validate_change([comment: :id], fn [comment: :id], 200 ->
+          [comment: [id: "Too Large"]]
+        end)
 
-      assert changeset.valid?
-      assert changeset.errors == []
+      refute changeset.valid?
+      assert changeset.errors == [comment: [id: "Too Large"]]
 
       changeset =
-        Ecto.Changeset.cast(
-          %Post{},
-          %{"title" => "hello", "comment" => %{"id" => "200"}},
-          ~w(id token title body upvotes decimal color topics virtual)a
-        )
-        |> Ecto.Changeset.cast_assoc(:comment,
+        Ecto.Changeset.cast(%Post{},
+          %{"title" => "hello", "comment" => %{"id" => "200"}}, [:title]
+        ) |> Ecto.Changeset.cast_assoc(:comment,
           with: fn struct, changes ->
             Ecto.Changeset.cast(struct, changes, [:id])
           end
@@ -970,6 +988,8 @@ defmodule Ecto.ChangesetTest do
         |> Ecto.Changeset.cast_embed(:tags,
           with: fn struct, changes -> Ecto.Changeset.cast(struct, changes, [:name]) end
         )
+
+        changeset
         |> validate_change([tags: :name], fn
           [tags: :name], "Simpsons Fan Fiction" -> []
           [tags: :name], "safe for work" -> []
@@ -977,6 +997,17 @@ defmodule Ecto.ChangesetTest do
 
       assert changeset.valid?
       assert changeset.errors == []
+
+      # When invalid with tuple
+        result =
+          changeset
+          |> validate_change([tags: :name], fn
+            [tags: :name], "Simpsons Fan Fiction" -> [tags: [name: {"oops", type: "bar"}]]
+            [tags: :name], "safe for work" -> []
+          end)
+
+      refute result.valid?
+      assert result.errors == [tags: [name: {"oops", [type: "bar"]}]]
     end
 
     test "when field points to a has_many, we pass all the values to the validator" do
@@ -1121,10 +1152,6 @@ defmodule Ecto.ChangesetTest do
       end
     end
 
-    test "failing a validation" do
-
-    end
-
     test "Pointing to a virtual field works" do
       changeset =
         Ecto.Changeset.cast(%Post{}, %{"virtual" => "insanity"}, [:virtual])
@@ -1181,15 +1208,7 @@ defmodule Ecto.ChangesetTest do
       |> validate_change([:title], :oops, fn [:title], "hello" -> [title: "oops"] end)
 
     refute changeset.valid?
-    assert changeset.errors == [title: {"oops", []}]
-    assert validations(changeset) == [{[:title], :oops}]
-
-    changeset =
-      changeset(%{})
-      |> validate_change([:title], :oops, fn [:title], "hello" -> [title: "oops"] end)
-
-    assert changeset.valid?
-    assert changeset.errors == []
+    assert changeset.errors == [title: "oops"]
     assert validations(changeset) == [{[:title], :oops}]
   end
 
@@ -1206,6 +1225,27 @@ defmodule Ecto.ChangesetTest do
     refute changeset.valid?
     assert changeset.required == [:title]
     assert changeset.errors == [title: {"can't be blank", [validation: :required]}]
+
+    changeset = changeset(%{}) |> validate_required(:title)
+    refute changeset.valid?
+    assert changeset.required == [:title]
+    assert changeset.errors == [title: {"can't be blank", [validation: :required]}]
+
+    changeset =
+      Ecto.Changeset.cast(%Post{},
+        %{"id" => 10}, [:title]
+      ) |> Ecto.Changeset.cast_assoc(:comment, with: fn struct, changes ->
+        Ecto.Changeset.cast(struct, changes, [:id])
+      end)
+      |> validate_required([:title, comment: [:id]], message: "is blank")
+
+      refute changeset.valid?
+      assert changeset.required == [:title, {:comment, [:id]}]
+      assert changeset.errors ==  [
+        {:title, {"is blank", [validation: :required]}},
+        {{:comment, [:id]}, {"is blank", [validation: :required]}}
+      ]
+
 
     # When nil
     changeset =
@@ -1232,7 +1272,7 @@ defmodule Ecto.ChangesetTest do
     end
 
     # When field is not an atom
-    assert_raise ArgumentError, ~r/expects field names to be atoms, got: `"title"`/, fn ->
+    assert_raise ArgumentError, ~r/unknown field \"title\"/, fn ->
       changeset(%{"title" => "hello"})
       |> validate_required("title")
     end

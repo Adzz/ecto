@@ -1697,13 +1697,6 @@ defmodule Ecto.Changeset do
         values = [_ | _] -> Enum.flat_map(values, fn value -> validator.(fields, value) end)
         value -> validator.(fields, value)
       end
-      |> Enum.map(fn
-        {key, val} when is_atom(key) and is_binary(val) ->
-          {key, {val, []}}
-
-        {key, {val, opts}} when is_atom(key) and is_binary(val) and is_list(opts) ->
-          {key, {val, opts}}
-      end)
 
     case new_errors do
       [] -> changeset
@@ -1796,21 +1789,20 @@ defmodule Ecto.Changeset do
 
       validate_required(changeset, :title)
       validate_required(changeset, [:title, :body])
-
+      validate_required(changeset, [title: [comment: :text]])
   """
   @spec validate_required(t, list | atom, Keyword.t) :: t
-  def validate_required(%Changeset{} = changeset, fields, opts \\ []) when not is_nil(fields) do
+  def validate_required(%Changeset{} = changeset, fields, opts \\ []) do
     %{required: required, errors: errors, changes: changes} = changeset
+    fields = List.wrap(fields)
+    ensure_fields_exist!(changeset, fields)
     message = message(opts, "can't be blank")
     trim = Keyword.get(opts, :trim, true)
-    fields = List.wrap(fields)
 
-    fields_with_errors =
-      for field <- fields,
-          missing?(changeset, field, trim),
-          ensure_field_exists!(changeset, field),
-          is_nil(errors[field]),
-          do: field
+    fields_with_errors = Enum.filter(fields, fn field_or_path ->
+      missing?(changeset, field_or_path, trim) ||
+      has_error?(errors, field_or_path)
+    end)
 
     case fields_with_errors do
       [] -> %{changeset | required: fields ++ required}
@@ -1820,6 +1812,10 @@ defmodule Ecto.Changeset do
         %{changeset | changes: changes, required: fields ++ required, errors: new_errors ++ errors, valid?: false}
     end
   end
+
+  defp has_error?(errors, {_field, path}), do: has_error?(errors, path)
+  defp has_error?(errors, [field]), do: has_error?(errors, field)
+  defp has_error?(errors, field), do: not is_nil(errors[field])
 
   @doc """
   Validates that no existing record with a different primary key
@@ -1912,18 +1908,27 @@ defmodule Ecto.Changeset do
     end
   end
 
+  # If given a path, we will check the existence of every field along that path.
   defp ensure_fields_exist!(%Changeset{data: data, types: schema_types}, fields = [_ | _]) do
-    ensure_all_fields_exist!(schema_types, fields, data)
+    Enum.all?(fields, fn field_or_path ->
+      ensure_all_fields_exist!(schema_types, field_or_path, data)
+    end)
   end
 
   defp ensure_field_exists!(%Changeset{data: data, types: schema_types}, field) do
     ensure_field_exists_in_schema!(schema_types, field, data)
   end
 
-  defp ensure_all_fields_exist!(schema_types, [{field, rest}], data) do
+  defp ensure_all_fields_exist!(schema_types, {field, path}, data) do
     ensure_field_exists_in_schema!(schema_types, field, data)
     {_, %{related: related}} = Map.fetch!(schema_types, field)
-    ensure_all_fields_exist!(related.__changeset__(), rest, data)
+    ensure_all_fields_exist!(related.__changeset__(), path, data)
+  end
+
+  defp ensure_all_fields_exist!(schema_types, [{field, path}], data) do
+    ensure_field_exists_in_schema!(schema_types, field, data)
+    {_, %{related: related}} = Map.fetch!(schema_types, field)
+    ensure_all_fields_exist!(related.__changeset__(), path, data)
   end
 
   defp ensure_all_fields_exist!(schema_types, [field], data) do
@@ -1940,6 +1945,14 @@ defmodule Ecto.Changeset do
     else
       raise ArgumentError, "unknown field #{inspect(field)} in #{inspect(data)}"
     end
+  end
+
+  defp missing?(changeset, {field, path}, trim) when is_atom(field) do
+    missing?(changeset, path, trim)
+  end
+
+  defp missing?(changeset, [field], trim) when is_atom(field) do
+    missing?(changeset, field, trim)
   end
 
   defp missing?(changeset, field, trim) when is_atom(field) do
