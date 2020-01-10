@@ -1799,10 +1799,20 @@ defmodule Ecto.Changeset do
     message = message(opts, "can't be blank")
     trim = Keyword.get(opts, :trim, true)
 
-    fields_with_errors = Enum.filter(fields, fn field_or_path ->
-      missing?(changeset, field_or_path, trim) ||
-      has_error?(errors, field_or_path)
+    fields_with_errors = Enum.filter(fields, fn
+      field_or_path = [_|_] ->
+        "first"|> IO.inspect(limit: :infinity)
+        Enum.map(field_or_path, fn f ->
+          missing?(changeset, f, trim) ||
+          has_error?(errors, f)
+        end)
+
+      field_or_path ->
+        "2nd"|> IO.inspect(limit: :infinity)
+        missing?(changeset, field_or_path |> IO.inspect(limit: :infinity), trim) ||
+        has_error?(errors, field_or_path)
     end)
+    |> IO.inspect(limit: :infinity, label: "ERROR FIELDS")
 
     case fields_with_errors do
       [] -> %{changeset | required: fields ++ required}
@@ -1910,8 +1920,9 @@ defmodule Ecto.Changeset do
 
   # If given a path, we will check the existence of every field along that path.
   defp ensure_fields_exist!(%Changeset{data: data, types: schema_types}, fields = [_ | _]) do
+    "h" |> IO.inspect(limit: :infinity)
     Enum.all?(fields, fn field_or_path ->
-      ensure_all_fields_exist!(schema_types, field_or_path, data)
+      ensure_all_fields_exist!(schema_types|> IO.inspect(limit: :infinity), field_or_path|> IO.inspect(limit: :infinity), data|> IO.inspect(limit: :infinity))
     end)
   end
 
@@ -1922,7 +1933,7 @@ defmodule Ecto.Changeset do
   defp ensure_all_fields_exist!(schema_types, {field, path}, data) do
     ensure_field_exists_in_schema!(schema_types, field, data)
     {_, %{related: related}} = Map.fetch!(schema_types, field)
-    ensure_all_fields_exist!(related.__changeset__(), path, data)
+    ensure_all_fields_exist!(related.__changeset__(), path|> IO.inspect(limit: :infinity), data)
   end
 
   defp ensure_all_fields_exist!(schema_types, [{field, path}], data) do
@@ -1932,7 +1943,14 @@ defmodule Ecto.Changeset do
   end
 
   defp ensure_all_fields_exist!(schema_types, [field], data) do
+    "Finally" |> IO.inspect(limit: :infinity)
     ensure_field_exists_in_schema!(schema_types, field, data)
+  end
+
+  defp ensure_all_fields_exist!(schema_types, fields = [_|_], data) do
+    Enum.all?(fields, fn field_or_path ->
+      ensure_all_fields_exist!(schema_types, field_or_path, data)
+    end)
   end
 
   defp ensure_all_fields_exist!(schema_types, field, data) do
@@ -2100,6 +2118,29 @@ defmodule Ecto.Changeset do
 
   """
   @spec validate_length(t, atom, Keyword.t) :: t
+  def validate_length(changeset, fields = [_|_], opts) when is_list(opts) do
+    validate_change changeset, fields, {:length, opts}, fn
+      _, value ->
+        count_type = opts[:count] || :graphemes
+        {type, length} = case {value, count_type} do
+          {value, :codepoints} when is_binary(value) ->
+            {:string, codepoints_length(value, 0)}
+          {value, :graphemes} when is_binary(value) ->
+            {:string, String.length(value)}
+          {value, :bytes} when is_binary(value) ->
+            {:binary, byte_size(value)}
+          {value, _} when is_list(value) ->
+            {:list, list_length(changeset, fields, value)}
+        end
+
+        error = ((is = opts[:is]) && wrong_length(type, length, is, opts)) ||
+                ((min = opts[:min]) && too_short(type, length, min, opts)) ||
+                ((max = opts[:max]) && too_long(type, length, max, opts))
+
+        if error, do: [{fields, error}], else: []
+    end
+  end
+
   def validate_length(changeset, field, opts) when is_list(opts) do
     validate_change changeset, field, {:length, opts}, fn
       _, value ->
