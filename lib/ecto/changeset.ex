@@ -1748,7 +1748,6 @@ defmodule Ecto.Changeset do
     validate_change(changeset, field_or_path, validator)
   end
 
-
   @doc """
   Validates that one or more fields are present in the changeset.
 
@@ -1799,20 +1798,38 @@ defmodule Ecto.Changeset do
     message = message(opts, "can't be blank")
     trim = Keyword.get(opts, :trim, true)
 
-    fields_with_errors = Enum.filter(fields, fn
-      field_or_path = [_|_] ->
-        "first"|> IO.inspect(limit: :infinity)
-        Enum.map(field_or_path, fn f ->
-          missing?(changeset, f, trim) ||
-          has_error?(errors, f)
-        end)
+    # [[:a], [:b], [[:d, :c], [:e, :c]]]
 
-      field_or_path ->
-        "2nd"|> IO.inspect(limit: :infinity)
-        missing?(changeset, field_or_path |> IO.inspect(limit: :infinity), trim) ||
-        has_error?(errors, field_or_path)
+    # We need to collect the whole path so that we can see which failed,
+    # currently we only get the leaf field
+
+    # So we have travel to the end and do something with the value there.
+    # Travel each path, call a function at each node.
+    # Travel each path, do something at each node, collect the path as you go.
+
+    # we want a subset of the graph. We want to filter the graph by the the
+    # missing? / has_error? And filter should return the full path for
+
+    fields_to_paths(fields)
+    |> IO.inspect(limit: :infinity, label: "FIELDS 2 PATHS")
+
+    walk_path_and_then(fields, fn field ->
+      if missing?(changeset, field, trim) || has_error?(errors, field) do
+        field
+      end
     end)
-    |> IO.inspect(limit: :infinity, label: "ERROR FIELDS")
+    |> IO.inspect(limit: :infinity, label: "AND THEN")
+    # we know they have errors, now how do we show which field has the error
+    fields_with_errors = []
+    # We want the field and the value it points to if there is an error?
+    # Enum.filter(fields, fn
+    #   field_or_path ->
+    #     Enum.map(field_or_path, fn f ->
+    #       missing?(changeset, f, trim) || has_error?(errors, f)
+    #     end)
+    #   field_or_path ->
+    #     missing?(changeset, field_or_path, trim) || has_error?(errors, field_or_path)
+    # end)
 
     case fields_with_errors do
       [] -> %{changeset | required: fields ++ required}
@@ -1823,9 +1840,29 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp has_error?(errors, {_field, path}), do: has_error?(errors, path)
-  defp has_error?(errors, [field]), do: has_error?(errors, field)
+  # defp has_error?(errors, [{_field, path}]), do: has_error?(errors, path)
+  # defp has_error?(errors, [{_field, path}]), do: has_error?(errors, path)
+  # defp has_error?(errors, {_field, path}), do: has_error?(errors, path)
+  # defp has_error?(errors, [field]), do: has_error?(errors, field)
+  # defp has_error?(errors, fields = [_|_]), do: Enum.map(fields, fn field -> has_error?(errors, field) end)
   defp has_error?(errors, field), do: not is_nil(errors[field])
+
+  defp fields_to_paths(fields) do
+    reduce_over_path(fields, [], fn field, acc -> acc ++ [field]  end)
+    |> flatten_paths()
+  end
+
+  def flatten_paths(paths) do
+    Enum.reduce(paths, [], fn
+      [path], acc -> acc ++ [[path]]
+      [path | [rest]], acc -> acc ++ [[path, rest]]
+      [path | rest], acc ->
+                            new_acc = acc ++ [[path]]
+                            new_acc ++ [(flatten_paths(rest) |> List.flatten)]
+      [], acc -> acc
+      field, acc -> acc ++ [[field]]
+    end)
+  end
 
   @doc """
   Validates that no existing record with a different primary key
@@ -1918,42 +1955,33 @@ defmodule Ecto.Changeset do
     end
   end
 
-  # If given a path, we will check the existence of every field along that path.
   defp ensure_fields_exist!(%Changeset{data: data, types: schema_types}, fields = [_ | _]) do
-    "h" |> IO.inspect(limit: :infinity)
-    Enum.all?(fields, fn field_or_path ->
-      ensure_all_fields_exist!(schema_types|> IO.inspect(limit: :infinity), field_or_path|> IO.inspect(limit: :infinity), data|> IO.inspect(limit: :infinity))
-    end)
+    reducing_fun = fn
+      field, {schema_types, data, results} ->
+        # Are the validate_change tests really changing what we think they are? Like do they pass
+        # by accident....
+        field |> IO.inspect(limit: :infinity, label: "")
+        with true = ensure_field_exists_in_schema!(schema_types, field, data),
+          {_, %{related: related}} <- Map.fetch!(schema_types, field) do
+          {related.__changeset__(), data, [ true | results] }
+        else
+          # This is the case where we aren't looking for a relation.
+          # catch all is safe as the first pattern will raise if it doesn't match and if the second
+          # case doesn't match, we know we aren't looking for a relation.
+          _ -> {schema_types, data, [ true | results] }
+        end
+    end
+
+    # If we have a graph we need to produce a graph back
+    # [:a, b: [:c, d: :e]]
+    # Do we just get a function that generates paths, then use them in get_in.
+    # But get_in doesn't deal with a has many situation.
+    # Paths here are [:a], [:b, :c], [:b, :d, :e]
+
+    reduce_over_path(fields, {schema_types, data, []}, reducing_fun)
   end
 
   defp ensure_field_exists!(%Changeset{data: data, types: schema_types}, field) do
-    ensure_field_exists_in_schema!(schema_types, field, data)
-  end
-
-  defp ensure_all_fields_exist!(schema_types, {field, path}, data) do
-    ensure_field_exists_in_schema!(schema_types, field, data)
-    {_, %{related: related}} = Map.fetch!(schema_types, field)
-    ensure_all_fields_exist!(related.__changeset__(), path|> IO.inspect(limit: :infinity), data)
-  end
-
-  defp ensure_all_fields_exist!(schema_types, [{field, path}], data) do
-    ensure_field_exists_in_schema!(schema_types, field, data)
-    {_, %{related: related}} = Map.fetch!(schema_types, field)
-    ensure_all_fields_exist!(related.__changeset__(), path, data)
-  end
-
-  defp ensure_all_fields_exist!(schema_types, [field], data) do
-    "Finally" |> IO.inspect(limit: :infinity)
-    ensure_field_exists_in_schema!(schema_types, field, data)
-  end
-
-  defp ensure_all_fields_exist!(schema_types, fields = [_|_], data) do
-    Enum.all?(fields, fn field_or_path ->
-      ensure_all_fields_exist!(schema_types, field_or_path, data)
-    end)
-  end
-
-  defp ensure_all_fields_exist!(schema_types, field, data) do
     ensure_field_exists_in_schema!(schema_types, field, data)
   end
 
@@ -1965,13 +1993,21 @@ defmodule Ecto.Changeset do
     end
   end
 
-  defp missing?(changeset, {field, path}, trim) when is_atom(field) do
-    missing?(changeset, path, trim)
-  end
+  # defp missing?(changeset, [{field, path}], trim) when is_atom(field) do
+  #   missing?(changeset, path, trim)
+  # end
 
-  defp missing?(changeset, [field], trim) when is_atom(field) do
-    missing?(changeset, field, trim)
-  end
+  # defp missing?(changeset, {field, path}, trim) when is_atom(field) do
+  #   missing?(changeset, path, trim)
+  # end
+
+  # defp missing?(changeset, [field], trim) when is_atom(field) do
+  #   missing?(changeset, field, trim)
+  # end
+
+  # defp missing?(changeset, fields = [_|_], trim) do
+  #   Enum.any?(fields, fn field -> missing?(changeset, field, trim) end)
+  # end
 
   defp missing?(changeset, field, trim) when is_atom(field) do
     case get_field(changeset, field) do
@@ -3006,6 +3042,56 @@ defmodule Ecto.Changeset do
         acc
     end
   end
+
+  defp walk_path_and_then([{_field, path}], fun) do
+    walk_path_and_then(path, fun)
+  end
+
+  defp walk_path_and_then([field], fun) do
+    walk_path_and_then(field, fun)
+  end
+
+  defp walk_path_and_then(fields = [_ | _], fun) do
+    Enum.map(fields, fn field ->
+      walk_path_and_then(field, fun)
+    end)
+  end
+
+  defp walk_path_and_then({_field, rest}, fun) do
+    walk_path_and_then(rest, fun)
+  end
+
+  defp walk_path_and_then(field, fun) do
+    fun.(field)
+  end
+
+  # This function will reduce over a path depth first, calling the reducing function with the node
+  # and reducer, every time it hits a node in the path. Each path down produces its own value in
+  # the reduceer
+  # [x -> y -> z, a -> b -> c]
+
+  defp reduce_over_path([{field, path}], acc, fun) do
+    reduce_over_path(path, fun.(field, acc), fun)
+  end
+
+  defp reduce_over_path([field], acc, fun) do
+    fun.(field, acc)
+  end
+
+  defp reduce_over_path(fields = [_|_], acc, fun) do
+    Enum.map(fields, fn
+      field ->
+        reduce_over_path(field, acc, fun)
+    end)
+  end
+
+  defp reduce_over_path({field, rest}, acc, fun) do
+    reduce_over_path(rest, fun.(field, acc), fun)
+  end
+
+  defp reduce_over_path(field, acc, fun) do
+    fun.(field, acc)
+  end
 end
 
 defimpl Inspect, for: Ecto.Changeset do
@@ -3028,3 +3114,6 @@ defimpl Inspect, for: Ecto.Changeset do
   defp to_struct(%{__struct__: struct}, _opts), do: "#" <> Kernel.inspect(struct) <> "<>"
   defp to_struct(other, opts), do: to_doc(other, opts)
 end
+
+
+

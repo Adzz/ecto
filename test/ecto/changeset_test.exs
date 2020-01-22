@@ -871,7 +871,7 @@ defmodule Ecto.ChangesetTest do
     end
   end
 
-  describe "validate_changeset/3 When using a path for field" do
+  describe "validate_change/3 When using a path for field" do
     test "When field exists and is being changed we call the validator correctly" do
       changeset =
         changeset(%{"title" => "hello"})
