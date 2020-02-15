@@ -1705,10 +1705,11 @@ defmodule Ecto.Changeset do
   end
 
   defp get_value(changes, path) when is_list(changes) do
+    # Is tbis flatten still correct if we go to deeper depths?
     Enum.map(changes, fn change -> get_value(change, path) end)
     |> List.flatten()
   end
-
+  # It can be a changeset in the case that the change is a relation (which we have casted)
   defp get_value(changeset = %Changeset{}, [{field, nested_field}]) do
     Map.get(changeset.changes, field, [])
     |> get_value(nested_field)
@@ -3117,3 +3118,62 @@ end
 
 
 
+defmodule T do
+  def reduce_over_path(fields, acc, fun) do
+    # WE can ask are we at the top, therefore do we need to start at the begining
+    # and skip nodes we've seen?
+    # Or we need to know if
+
+    # Whenever we get here we know we are at a split in the road. Meaning
+    # We always want to take all of the previously visited points, call the reducer once
+    # for each of them, and then call it once for us. This
+
+    # Here we need to back track in effect, and get everything from the beginning of the path.
+    # Which means we need to keep track of depth?
+
+    # Do we need a stack here? Is this BFs or something...
+
+    # Or keep track of visited nodes, and just start
+    # at the top again, skipping nodes that we've seen already?
+
+    # fields|> IO.inspect(limit: :infinity, label: "FIELDS")
+    # Enum.map(fields, fn
+    #   field ->
+    #      field |> IO.inspect(limit: :infinity, label: "NEXT FIELD")
+    #     reduce_over_path(field, acc, fun)
+    # end)
+    reduce_over_path(fields, acc, fun, [])
+  end
+
+  def reduce_over_path([{field, path}], acc, fun, previous) do
+    field|> IO.inspect(limit: :infinity, label: "[{field, path}]")
+    reduce_over_path(path, fun.(field, acc), fun, previous ++ [field])
+  end
+
+  def reduce_over_path([field], acc, fun, previous) do
+    field|> IO.inspect(limit: :infinity, label: "[field]")
+    fun.(field, acc), previous
+  end
+
+  def reduce_over_path(fields = [head|_], acc, fun, previous) do
+    # reduce_over_path(field, fun.(head, acc), previous ++ [head])
+
+    Enum.map(fields, fn
+      field ->
+        previous |> IO.inspect(limit: :infinity, label: "PREV")
+        reduce_over_path(field, acc, fun, previous ++ [field]) |> IO.inspect(limit: :infinity, label: "OVER IT")
+        accumulator
+    end)
+  end
+
+  def reduce_over_path({field, rest}, acc, fun, previous) do
+    field|> IO.inspect(limit: :infinity, label: "{field, rest}")
+    rest |> IO.inspect(limit: :infinity, label: "rest")
+    reduce_over_path(rest, fun.(field, acc), fun, previous ++ [field])
+  end
+
+  def reduce_over_path(field, acc, fun, previous) do
+    field|> IO.inspect(limit: :infinity, label: "field")
+    fun.(field, acc)
+  end
+end
